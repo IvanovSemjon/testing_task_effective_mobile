@@ -16,11 +16,10 @@ class JWTAuthMiddleware:
 
     def __call__(self, request):
         self.process_request(request)
-        response = self.get_response(request)
-        return response
+        return self.get_response(request)
 
     def process_request(self, request):
-        # Если AuthenticationMiddleware уже установил user, оставляем его
+        # Если стандартный AuthenticationMiddleware уже установил user, оставляем его
         if hasattr(request, "user") and request.user.is_authenticated:
             return
 
@@ -35,13 +34,12 @@ class JWTAuthMiddleware:
 
         # 1️⃣ Проверяем кастомную сессию
         session = Session.objects.filter(token=token).first()
-        if session and session.is_valid:
+        if session and session.is_valid and session.user.is_active:
             request.user = session.user
-            session.user.last_login = timezone.now()
-            session.user.save(update_fields=["last_login"])
+            request.user.update_last_login()
             return  # пользователь найден через сессию — больше не проверяем JWT
 
-        # 2️⃣ Пробуем декодировать JWT
+        # 2️⃣ Пробуем расшифровать JWT
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
             user_id = payload.get("user_id")

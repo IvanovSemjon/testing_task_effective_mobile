@@ -16,7 +16,7 @@ class User(models.Model):
     last_name = models.CharField(max_length=50, blank=True)
     email = models.EmailField(unique=True)
     password = models.CharField(max_length=255)
-    role = models.ForeignKey(Role, on_delete=models.PROTECT)  # нельзя удалить роль, пока есть пользователи
+    role = models.ForeignKey(Role, on_delete=models.PROTECT, null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -27,40 +27,43 @@ class User(models.Model):
 
     def __str__(self):
         return self.email
+    
+    def deactivate(self):
+        self.is_active = False
+        self.save(update_fields=["is_active"])
+        Session.objects.filter(user=self).update(expire_at=timezone.now())
 
-    # -----------------------
-    # Методы работы с паролем
-    # -----------------------
+
+    # Пароль
     def set_password(self, raw_password: str):
-        """Хеширует и сохраняет пароль"""
         self.password = bcrypt.hashpw(raw_password.encode(), bcrypt.gensalt()).decode()
         self.save(update_fields=['password'])
 
     def check_password(self, raw_password: str) -> bool:
-        """Проверяет пароль"""
         return bcrypt.checkpw(raw_password.encode(), self.password.encode())
 
-    # -----------------------
-    # Методы работы с JWT
-    # -----------------------
+    # JWT и сессии
     def generate_jwt(self, expire_hours: int = 2) -> str:
-        """Создает JWT токен и сохраняет сессию"""
         expire_at = timezone.now() + timedelta(hours=expire_hours)
-        payload = {"user_id": str(self.id), "exp": expire_at.timestamp()}
-        token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-
-        # Создаем или обновляем сессию
-        Session.objects.update_or_create(user=self, defaults={"token": token, "expire_at": expire_at})
+        token = jwt.encode({"user_id": str(self.id), "exp": expire_at.timestamp()},
+                           SECRET_KEY, algorithm="HS256")
+        Session.create_for_user(self, token, expire_at)
         return token
+
+    def update_last_login(self):
+        self.last_login = timezone.now()
+        self.save(update_fields=['last_login'])
+
+    def deactivate(self):
+        """Soft delete пользователя"""
+        self.is_active = False
+        self.save(update_fields=['is_active'])
 
     @staticmethod
     def decode_jwt(token: str):
-        """Декодирует токен JWT и возвращает payload"""
         try:
             return jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        except jwt.ExpiredSignatureError:
-            return None
-        except jwt.InvalidTokenError:
+        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
             return None
 
 
@@ -69,6 +72,7 @@ class Session(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="sessions")
     token = models.CharField(max_length=512, unique=True)
     expire_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['-expire_at']
@@ -78,10 +82,13 @@ class Session(models.Model):
 
     @property
     def is_valid(self) -> bool:
-        """Проверяет, что сессия еще не истекла"""
         return self.expire_at > timezone.now()
 
     def revoke(self):
-        """Аннулирует сессию"""
         self.expire_at = timezone.now()
         self.save(update_fields=['expire_at'])
+
+    @classmethod
+    def create_for_user(cls, user: User, token: str, expire_at):
+        """Создает новую сессию"""
+        return cls.objects.create(user=user, token=token, expire_at=expire_at)
