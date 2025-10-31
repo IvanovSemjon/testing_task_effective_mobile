@@ -5,10 +5,10 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 
 
-# Кастомное permission, чтобы только admin имел доступ
+# чтобы только admin имел доступ
 class IsAdminPermission(permissions.BasePermission):
     def has_permission(self, request, view):
-        return bool(request.user and request.user.role.name == "admin")
+        return bool(request.user and getattr(request.user.role, "name", None) == "admin")
 
 
 # ViewSet для ролей
